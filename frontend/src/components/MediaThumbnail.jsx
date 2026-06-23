@@ -21,6 +21,14 @@ const getVideoColor = (name) => {
   return colors[Math.abs(hash) % colors.length];
 };
 
+const SUPPORTED_VIDEO_EXTENSIONS = ['mp4', 'webm', 'ogg', 'mov'];
+
+const isSupportedVideo = (filename) => {
+  if (!filename) return false;
+  const ext = filename.split('.').pop()?.toLowerCase();
+  return SUPPORTED_VIDEO_EXTENSIONS.includes(ext);
+};
+
 /**
  * Thumbnail dengan lazy loading dan local cache
  */
@@ -56,6 +64,12 @@ const MediaThumbnail = ({ file, className }) => {
   useEffect(() => {
     if (!visible) return;
 
+    // Cegah request network untuk video format yang tidak didukung browser
+    if (isVideo && !isSupportedVideo(file.name)) {
+      setMediaStatus('error');
+      return;
+    }
+
     const resolveMediaUrl = async () => {
       // Coba cari di local cache dulu
       const cached = await mediaCache.get(file);
@@ -72,13 +86,25 @@ const MediaThumbnail = ({ file, className }) => {
     };
 
     resolveMediaUrl();
-  }, [visible, file, isImage]);
+  }, [visible, file, isImage, isVideo]);
 
   // Simpan ke cache jika pemuatan dari network berhasil
   const handleImageLoad = () => {
     setMediaStatus('loaded');
     if (srcUrl && !srcUrl.startsWith('blob:')) {
       mediaCache.set(file, srcUrl);
+    }
+  };
+
+  // Simpan video ke cache jika pemuatan berhasil dan ukuran di bawah 150MB
+  const handleVideoLoad = () => {
+    setMediaStatus('loaded');
+    if (srcUrl && !srcUrl.startsWith('blob:')) {
+      if (!file.size || file.size < 150 * 1024 * 1024) {
+        mediaCache.set(file, srcUrl).catch((err) => {
+          console.warn('[MediaThumbnail] Gagal menyimpan video ke cache:', err);
+        });
+      }
     }
   };
 
@@ -113,7 +139,7 @@ const MediaThumbnail = ({ file, className }) => {
             preload="metadata"
             muted
             playsInline
-            onLoadedData={() => setMediaStatus('loaded')}
+            onLoadedData={handleVideoLoad}
             onError={() => setMediaStatus('error')}
           />
         )}
