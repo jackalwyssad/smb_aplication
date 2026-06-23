@@ -7,6 +7,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { filesAPI } from '../utils/api';
 import { folderCache } from '../utils/folderCache';
+import { mediaCache } from '../utils/mediaCache';
 import Breadcrumb from '../components/Breadcrumb';
 import LoadingSpinner from '../components/LoadingSpinner';
 import MediaViewer from '../components/MediaViewer';
@@ -97,6 +98,9 @@ const FileBrowserPage = () => {
       } else {
         setViewMode(prev => prev === 'gallery' ? 'grid' : prev);
       }
+
+      // Pre-cache folder thumbnails in background
+      mediaCache.preCacheFolder(cachedFiles);
     } else {
       setIsLoading(true);
     }
@@ -110,6 +114,8 @@ const FileBrowserPage = () => {
       if (!forceRefresh && cachedFiles && areFilesEqual(cachedFiles, freshFiles)) {
         setIsOfflineMode(false);
         setIsLoading(false);
+        // Tetap jalankan pre-cache di background untuk mengantisipasi ada thumbnail baru yang belum lengkap
+        mediaCache.preCacheFolder(freshFiles);
         return;
       }
 
@@ -127,6 +133,9 @@ const FileBrowserPage = () => {
       } else {
         setViewMode(prev => prev === 'gallery' ? 'grid' : prev);
       }
+
+      // Pre-cache folder thumbnails in background
+      mediaCache.preCacheFolder(freshFiles);
     } catch (err) {
       const errorMsg = err.response?.data?.error || 'Gagal memuat isi folder';
       if (cachedFiles) {
