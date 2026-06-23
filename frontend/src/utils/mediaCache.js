@@ -99,7 +99,15 @@ export const mediaCache = {
       const key = getThumbCacheKey(file);
       const response = await cache.match(key);
       if (response) {
+        // Cek apakah content-type adalah JSON (menandakan failed placeholder)
+        const contentType = response.headers.get('Content-Type');
+        if (contentType && contentType.includes('application/json')) {
+          return 'FAILED';
+        }
         const blob = await response.blob();
+        if (blob.type && blob.type.includes('application/json')) {
+          return 'FAILED';
+        }
         return URL.createObjectURL(blob);
       }
     } catch (err) {
@@ -125,6 +133,28 @@ export const mediaCache = {
       return true;
     } catch (err) {
       console.warn('[mediaCache] Gagal menulis thumbnail ke cache:', err.message);
+    }
+    return false;
+  },
+
+  /**
+   * Menyimpan tanda kegagalan pemuatan/pembuatan thumbnail ke cache
+   */
+  setFailedThumbnail: async (file) => {
+    try {
+      const cache = await caches.open(THUMB_CACHE_NAME);
+      const key = getThumbCacheKey(file);
+      const jsonBlob = new Blob([JSON.stringify({ failed: true })], { type: 'application/json' });
+      const response = new Response(jsonBlob, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': jsonBlob.size.toString(),
+        }
+      });
+      await cache.put(key, response);
+      return true;
+    } catch (err) {
+      console.warn('[mediaCache] Gagal menulis tanda gagal thumbnail ke cache:', err.message);
     }
     return false;
   },
@@ -157,15 +187,15 @@ export const mediaCache = {
         if (response.ok) {
           const blob = await response.blob();
           await mediaCache.setThumbnail(file, blob);
+        } else {
+          await mediaCache.setFailedThumbnail(file);
         }
       } catch (err) {
         console.warn('Gagal mem-precache thumbnail gambar:', file.name, err);
+        await mediaCache.setFailedThumbnail(file);
       }
     } else if (file.type === 'video') {
-      const SUPPORTED_VIDEO_EXTENSIONS = ['mp4', 'webm', 'ogg', 'mov'];
-      const ext = file.name.split('.').pop()?.toLowerCase();
-      if (!SUPPORTED_VIDEO_EXTENSIONS.includes(ext)) return;
-
+      // Kita coba pre-cache semua video (termasuk .mpeg), jika gagal akan ditandai failed
       try {
         const url = filesAPI.getStreamUrl(file.path);
         
@@ -180,7 +210,7 @@ export const mediaCache = {
           const timeout = setTimeout(() => {
             cleanup();
             reject(new Error('Pre-cache video timeout'));
-          }, 15000);
+          }, 8000); // 8 detik timeout
 
           const cleanup = () => {
             clearTimeout(timeout);
@@ -231,6 +261,8 @@ export const mediaCache = {
         await mediaCache.setThumbnail(file, blob);
       } catch (err) {
         console.warn('Gagal mem-precache thumbnail video:', file.name, err.message);
+        // Tandai gagal agar tidak dicoba kembali terus-menerus
+        await mediaCache.setFailedThumbnail(file);
       }
     }
   },

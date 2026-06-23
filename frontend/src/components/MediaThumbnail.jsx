@@ -65,15 +65,13 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
   useEffect(() => {
     if (!visible) return;
 
-    // Cegah request network untuk video format yang tidak didukung browser
-    if (isVideo && !isSupportedVideo(file.name)) {
-      setMediaStatus('error');
-      return;
-    }
-
     const resolveMediaUrl = async () => {
       // 1. Coba cari di thumbnail cache dulu (baik untuk image maupun video frame)
       const cachedThumb = await mediaCache.getThumbnail(file);
+      if (cachedThumb === 'FAILED') {
+        setMediaStatus('error');
+        return;
+      }
       if (cachedThumb) {
         setSrcUrl(cachedThumb);
         setMediaStatus('loaded');
@@ -100,10 +98,20 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
         if (response.ok) {
           const blob = await response.blob();
           await mediaCache.setThumbnail(file, blob);
+        } else {
+          await mediaCache.setFailedThumbnail(file);
         }
       } catch (err) {
         console.warn('[MediaThumbnail] Gagal menyimpan thumbnail gambar ke cache:', err);
+        await mediaCache.setFailedThumbnail(file);
       }
+    }
+  };
+
+  const handleImageError = () => {
+    setMediaStatus('error');
+    if (srcUrl && !srcUrl.startsWith('blob:')) {
+      mediaCache.setFailedThumbnail(file);
     }
   };
 
@@ -127,12 +135,24 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
                 setSrcUrl(localThumbUrl);
                 setIsThumbCached(true);
               }
+            } else {
+              await mediaCache.setFailedThumbnail(file);
             }
           }, 'image/jpeg', 0.6);
+        } else {
+          await mediaCache.setFailedThumbnail(file);
         }
       } catch (err) {
         console.warn('[MediaThumbnail] Gagal mengekstrak frame video:', err);
+        await mediaCache.setFailedThumbnail(file);
       }
+    }
+  };
+
+  const handleVideoError = () => {
+    setMediaStatus('error');
+    if (srcUrl && !srcUrl.startsWith('blob:')) {
+      mediaCache.setFailedThumbnail(file);
     }
   };
 
@@ -141,6 +161,7 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
     if (visible && isVideo && mediaStatus === 'loading' && !isThumbCached) {
       const timer = setTimeout(() => {
         setMediaStatus('error');
+        mediaCache.setFailedThumbnail(file);
       }, 5000); // 5 detik timeout
       return () => clearTimeout(timer);
     }
@@ -173,7 +194,7 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
             mediaStatus === 'loaded' ? 'opacity-100' : 'opacity-0'
           )}
           onLoad={handleImageLoad}
-          onError={() => setMediaStatus('error')}
+          onError={handleImageError}
         />
       )}
 
@@ -190,7 +211,7 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
           muted
           playsInline
           onLoadedData={handleVideoLoad}
-          onError={() => setMediaStatus('error')}
+          onError={handleVideoError}
         />
       )}
 

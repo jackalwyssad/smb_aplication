@@ -55,14 +55,7 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
     const resolveMedia = async () => {
       if (!currentFile) return;
 
-      // Cegah network stream untuk format video yang tidak didukung browser
-      if (currentFile.type === 'video' && !isSupportedVideo(currentFile.name)) {
-        if (active) {
-          setIsLoading(false);
-          setImageError(true);
-        }
-        return;
-      }
+
 
       // Coba cari di local cache dulu
       const cached = await mediaCache.get(currentFile);
