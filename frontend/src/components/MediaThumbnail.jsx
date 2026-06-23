@@ -32,7 +32,7 @@ const isSupportedVideo = (filename) => {
 /**
  * Thumbnail dengan lazy loading dan local cache
  */
-const MediaThumbnail = ({ file, className }) => {
+const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
   const [srcUrl, setSrcUrl] = useState('');
   const [mediaStatus, setMediaStatus] = useState('idle'); // idle | loading | loaded | error
   const [visible, setVisible] = useState(false);
@@ -168,7 +168,8 @@ const MediaThumbnail = ({ file, className }) => {
           src={srcUrl}
           alt={file.name}
           className={clsx(
-            'w-full h-full object-cover transition-opacity duration-300',
+            'w-full h-full transition-opacity duration-300',
+            objectFit === 'contain' ? 'object-contain' : 'object-cover',
             mediaStatus === 'loaded' ? 'opacity-100' : 'opacity-0'
           )}
           onLoad={handleImageLoad}
@@ -181,7 +182,8 @@ const MediaThumbnail = ({ file, className }) => {
         <video
           src={srcUrl}
           className={clsx(
-            'w-full h-full object-cover transition-opacity duration-300',
+            'w-full h-full transition-opacity duration-300',
+            objectFit === 'contain' ? 'object-contain' : 'object-cover',
             mediaStatus === 'loaded' ? 'opacity-100' : 'opacity-0'
           )}
           preload="metadata"

@@ -70,37 +70,43 @@ export const FileListItem = memo(({ file, onClick, onMenuClick }) => {
   const showThumbnail = isMedia(file.type);
 
   return (
-    <div className="flex items-center w-full hover:bg-dark-900/40 transition-colors pr-2 border-b border-dark-800/20">
+    <div className="flex items-center w-full hover:bg-dark-900/30 transition-colors pr-2 border-b border-dark-900/60 relative">
       <button
-        className="file-item-list flex-1 text-left flex items-center gap-3 p-2.5 min-w-0"
+        className="file-item-list flex-1 text-left flex items-start gap-3 p-3 min-w-0"
         onClick={() => onClick(file)}
         aria-label={file.name}
       >
-        {/* Icon/Thumb */}
-        {showThumbnail ? (
-          <MediaThumbnail
-            file={file}
-            className="w-10 h-10 rounded-xl flex-shrink-0"
-          />
-        ) : (
-          <FileIcon type={file.type} size="sm" className="!w-10 !h-10 rounded-xl" />
-        )}
+        {/* Widescreen Thumbnail Wrapper */}
+        <div className="w-[88px] h-[52px] rounded-lg overflow-hidden flex-shrink-0 flex items-center justify-center bg-black border border-dark-800/40 relative">
+          {showThumbnail ? (
+            <MediaThumbnail
+              file={file}
+              className="w-full h-full"
+              objectFit="contain"
+            />
+          ) : (
+            <div className="w-full h-full bg-dark-850 flex items-center justify-center text-dark-400">
+              <FileIcon type={file.type} size="sm" className="!w-6 !h-6" />
+            </div>
+          )}
+        </div>
 
-        {/* Info */}
-        <div className="flex-1 min-w-0">
-          <p className="text-dark-100 text-sm font-semibold truncate leading-tight">
+        {/* Info panel */}
+        <div className="flex-1 min-w-0 self-stretch flex flex-col justify-between">
+          <p className="text-dark-100 text-xs font-semibold line-clamp-2 leading-tight break-all pr-5">
             {file.name}
           </p>
-          <div className="flex items-center gap-2 mt-0.5">
+          <div className="flex justify-between items-center text-[10px] text-dark-500 mt-1 pr-5">
+            <span>
+              {file.modifiedAt ? new Date(file.modifiedAt).toLocaleDateString('id-ID', {
+                day: 'numeric', month: 'short', year: 'numeric'
+              }) : ''}
+            </span>
             {file.sizeFormatted && (
-              <span className="text-dark-500 text-xs">{file.sizeFormatted}</span>
+              <span className="font-medium text-dark-400">{file.sizeFormatted}</span>
             )}
-            {file.modifiedAt && (
-              <span className="text-dark-600 text-xs">
-                {new Date(file.modifiedAt).toLocaleDateString('id-ID', {
-                  day: 'numeric', month: 'short'
-                })}
-              </span>
+            {file.isDirectory && (
+              <span className="text-yellow-500/70 font-semibold">Folder</span>
             )}
           </div>
         </div>
@@ -108,7 +114,7 @@ export const FileListItem = memo(({ file, onClick, onMenuClick }) => {
 
       {/* Options button */}
       <button
-        className="w-9 h-9 rounded-full flex items-center justify-center text-dark-400 hover:text-white hover:bg-dark-800 active:scale-95 transition-all duration-100 flex-shrink-0"
+        className="w-8 h-8 rounded-full flex items-center justify-center text-dark-400 hover:text-white hover:bg-dark-800 active:scale-95 transition-all duration-100 flex-shrink-0 absolute right-2 top-1/2 -translate-y-1/2"
         onClick={(e) => {
           e.stopPropagation();
           onMenuClick(file, e);
