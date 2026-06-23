@@ -96,16 +96,9 @@ const MediaThumbnail = ({ file, className }) => {
     }
   };
 
-  // Simpan video ke cache jika pemuatan berhasil dan ukuran di bawah 150MB
+  // Pemuatan video berhasil (preview/metadata)
   const handleVideoLoad = () => {
     setMediaStatus('loaded');
-    if (srcUrl && !srcUrl.startsWith('blob:')) {
-      if (!file.size || file.size < 150 * 1024 * 1024) {
-        mediaCache.set(file, srcUrl).catch((err) => {
-          console.warn('[MediaThumbnail] Gagal menyimpan video ke cache:', err);
-        });
-      }
-    }
   };
 
   // Timeout loading video agar tidak stuck di skeleton jika format video tidak disupport browser

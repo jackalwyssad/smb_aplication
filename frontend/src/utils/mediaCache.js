@@ -29,9 +29,6 @@ export const mediaCache = {
     return null;
   },
 
-  /**
-   * Mengunduh dan menyimpan response file ke cache
-   */
   set: async (file, authenticatedUrl) => {
     try {
       const cache = await caches.open(CACHE_NAME);
@@ -45,6 +42,27 @@ export const mediaCache = {
       }
     } catch (err) {
       console.warn('[mediaCache] Gagal menulis ke cache:', err.message);
+    }
+    return false;
+  },
+
+  /**
+   * Menyimpan objek Blob langsung ke cache
+   */
+  setBlob: async (file, blob) => {
+    try {
+      const cache = await caches.open(CACHE_NAME);
+      const key = getCacheKey(file);
+      const response = new Response(blob, {
+        headers: {
+          'Content-Type': blob.type || 'video/mp4',
+          'Content-Length': blob.size.toString(),
+        }
+      });
+      await cache.put(key, response);
+      return true;
+    } catch (err) {
+      console.warn('[mediaCache] Gagal menulis blob ke cache:', err.message);
     }
     return false;
   },

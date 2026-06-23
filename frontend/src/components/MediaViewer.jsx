@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { X, ChevronLeft, ChevronRight, Download, ZoomIn, RotateCcw, Film } from 'lucide-react';
 import { useSwipeable } from 'react-swipeable';
-import { filesAPI } from '../utils/api';
+import api, { filesAPI } from '../utils/api';
 import { mediaCache } from '../utils/mediaCache';
 import LoadingSpinner from './LoadingSpinner';
 import clsx from 'clsx';
@@ -20,6 +20,7 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
   const [showControls, setShowControls] = useState(true);
   const [imageError, setImageError] = useState(false);
   const [srcUrl, setSrcUrl] = useState('');
+  const [downloadProgress, setDownloadProgress] = useState(0);
   const controlsTimerRef = useRef(null);
   const videoRef = useRef(null);
 
@@ -49,6 +50,7 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
     setIsLoading(true);
     setImageError(false);
     setSrcUrl('');
+    setDownloadProgress(0);
 
     const resolveMedia = async () => {
       if (!currentFile) return;
@@ -71,10 +73,10 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
         setIsLoading(false);
       } else {
         const streamUrl = filesAPI.getStreamUrl(currentFile.path);
-        setSrcUrl(streamUrl);
 
         // Jika ini gambar, unduh dan simpan ke cache secara sinkron untuk kemudahan
         if (currentFile.type === 'image') {
+          setSrcUrl(streamUrl);
           try {
             await mediaCache.set(currentFile, streamUrl);
             const newCached = await mediaCache.get(currentFile);
@@ -84,11 +86,42 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
           } catch (_) {}
         }
 
-        // Jika ini video dan ukurannya di bawah 150MB, cache di background agar pemutaran selanjutnya instan
-        if (currentFile.type === 'video' && currentFile.size && currentFile.size < 150 * 1024 * 1024) {
-          mediaCache.set(currentFile, streamUrl).catch((err) => {
-            console.warn('Gagal men-cache video di background:', err);
-          });
+        // Jika ini video, download dengan progress bar baru kemudian simpan ke cache
+        if (currentFile.type === 'video') {
+          try {
+            const token = sessionStorage.getItem('fb_token');
+            const downloadUrl = `/files/stream?path=${encodeURIComponent(currentFile.path)}&token=${token}`;
+            
+            const response = await api.get(downloadUrl, {
+              responseType: 'blob',
+              onDownloadProgress: (progressEvent) => {
+                if (active && progressEvent.total) {
+                  const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+                  setDownloadProgress(percentCompleted);
+                }
+              }
+            });
+
+            if (active) {
+              const blob = response.data;
+              await mediaCache.setBlob(currentFile, blob);
+              const localBlobUrl = await mediaCache.get(currentFile);
+              if (active && localBlobUrl) {
+                setSrcUrl(localBlobUrl);
+                setIsLoading(false);
+              } else {
+                setSrcUrl(streamUrl);
+                setIsLoading(false);
+              }
+            }
+          } catch (err) {
+            console.error('[MediaViewer] Gagal men-download video:', err);
+            if (active) {
+              // Fallback ke streaming jika download gagal
+              setSrcUrl(streamUrl);
+              setIsLoading(false);
+            }
+          }
         }
       }
     };
@@ -102,14 +135,14 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
 
   // Timeout loading state agar tidak stuck berputar selamanya jika video/gambar tidak didukung
   useEffect(() => {
-    if (isLoading) {
+    if (isLoading && (!isVideo || downloadProgress === 0)) {
       const timer = setTimeout(() => {
         setIsLoading(false);
         setImageError(true);
       }, 5000); // 5 detik timeout
       return () => clearTimeout(timer);
     }
-  }, [isLoading]);
+  }, [isLoading, isVideo, downloadProgress]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -214,8 +247,11 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
       >
         {/* Loading */}
         {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <LoadingSpinner size="lg" text="Memuat..." />
+          <div className="absolute inset-0 flex items-center justify-center z-10 bg-black/40">
+            <LoadingSpinner 
+              size="lg" 
+              text={downloadProgress > 0 ? `Mengunduh video... ${downloadProgress}%` : "Memuat..."} 
+            />
           </div>
         )}
 
