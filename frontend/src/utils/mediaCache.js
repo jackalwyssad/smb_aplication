@@ -22,6 +22,25 @@ const getDB = () => {
     };
     request.onsuccess = (e) => {
       dbInstance = e.target.result;
+      
+      // Bersihkan failed markers agar browser mencoba memuat ulang preview video yang sebelumnya gagal
+      try {
+        const tx = dbInstance.transaction(STORE_THUMBS, 'readwrite');
+        const store = tx.objectStore(STORE_THUMBS);
+        const cursorReq = store.openCursor();
+        cursorReq.onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (cursor) {
+            if (cursor.value && cursor.value.failed) {
+              cursor.delete();
+            }
+            cursor.continue();
+          }
+        };
+      } catch (err) {
+        console.warn('[mediaCache] Gagal membersihkan cache failed:', err.message);
+      }
+      
       resolve(dbInstance);
     };
     request.onerror = (e) => {

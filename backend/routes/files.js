@@ -383,12 +383,15 @@ router.get('/thumbnail', async (req, res) => {
     const isVideo = mimeType.startsWith('video/');
 
     if (isVideo) {
-      console.log(`[THUMBNAIL] Mengekstrak frame video dari SMB stream untuk: ${filename}`);
+      console.log(`[THUMBNAIL] Mengekstrak frame video via HTTP stream untuk: ${filename}`);
       
-      const stream = await smbCreateReadStream(smb, filePath);
+      const PORT = process.env.PORT || 3001;
+      const token = req.query.token || (req.headers.authorization && req.headers.authorization.split(' ')[1]);
+      const localStreamUrl = `http://localhost:${PORT}/api/files/stream?path=${encodeURIComponent(filePath)}&token=${token}`;
+      
       const ffmpeg = spawn(ffmpegPath, [
-        '-i', 'pipe:0',          // Input dari stdin
-        '-ss', '1',              // Cari ke detik ke-1
+        '-ss', '1',              // Seek ke detik ke-1 BEFORE input
+        '-i', localStreamUrl,    // Input URL HTTP
         '-vframes', '1',         // Hanya ambil 1 frame
         '-f', 'image2',          // Container format
         '-vcodec', 'mjpeg',      // MJPEG
@@ -399,8 +402,6 @@ router.get('/thumbnail', async (req, res) => {
       ffmpeg.stdout.on('data', (chunk) => imageChunks.push(chunk));
       
       ffmpeg.on('close', (code) => {
-        try { stream.destroy(); } catch (_) {}
-        
         if (code === 0 && imageChunks.length > 0) {
           const buf = Buffer.concat(imageChunks);
           setCachedThumbnail(cacheKey, buf, 'image/jpeg');
@@ -416,16 +417,8 @@ router.get('/thumbnail', async (req, res) => {
         }
       });
 
-      stream.pipe(ffmpeg.stdin);
-
-      stream.on('error', (err) => {
-        console.error('[THUMBNAIL] SMB stream error:', err.message);
-        try { ffmpeg.stdin.end(); } catch (_) {}
-      });
-
       ffmpeg.on('error', (err) => {
         console.error('[THUMBNAIL] FFmpeg spawn error:', err.message);
-        try { stream.destroy(); } catch (_) {}
         if (!res.headersSent) res.status(500).end();
       });
 
