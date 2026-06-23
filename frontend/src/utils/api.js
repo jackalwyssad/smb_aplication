@@ -77,7 +77,6 @@ export const filesAPI = {
       onUploadProgress,
     });
   },
-  
   // URL untuk streaming langsung (digunakan sebagai src di img/video)
   getStreamUrl: (path) => {
     const token = sessionStorage.getItem('fb_token');
@@ -92,6 +91,13 @@ export const filesAPI = {
   getDownloadUrl: (path) => {
     const token = sessionStorage.getItem('fb_token');
     return `${BASE_URL}/files/download?path=${encodeURIComponent(path)}&token=${token}`;
+  },
+
+  getTranscodeStatus: (path, start = false) => api.get('/files/transcode-status', { params: { path, start } }),
+
+  getTranscodedStreamUrl: (path) => {
+    const token = sessionStorage.getItem('fb_token');
+    return `${BASE_URL}/files/stream-transcoded?path=${encodeURIComponent(path)}&token=${token}`;
   },
 };
 

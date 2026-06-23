@@ -14,6 +14,14 @@ const isSupportedVideo = (filename) => {
   return SUPPORTED_VIDEO_EXTENSIONS.includes(ext);
 };
 
+const TRANSCODE_EXTENSIONS = ['.mpeg', '.mpg', '.mkv', '.avi', '.ts', '.wmv', '.flv', '.3gp'];
+
+const isTranscodingNeeded = (filename) => {
+  if (!filename) return false;
+  const ext = '.' + filename.split('.').pop()?.toLowerCase();
+  return TRANSCODE_EXTENSIONS.includes(ext);
+};
+
 const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [isLoading, setIsLoading] = useState(true);
@@ -21,6 +29,8 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
   const [imageError, setImageError] = useState(false);
   const [srcUrl, setSrcUrl] = useState('');
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [transcodeProgress, setTranscodeProgress] = useState(0);
+  const [isTranscoding, setIsTranscoding] = useState(false);
   const controlsTimerRef = useRef(null);
   const videoRef = useRef(null);
 
@@ -47,10 +57,13 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
   // Resolve media URL (cache vs network) & background caching
   useEffect(() => {
     let active = true;
+    let pollTimer = null;
     setIsLoading(true);
     setImageError(false);
     setSrcUrl('');
     setDownloadProgress(0);
+    setTranscodeProgress(0);
+    setIsTranscoding(false);
 
     const resolveMedia = async () => {
       if (!currentFile) return;
@@ -81,39 +94,96 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
 
         // Jika ini video, download dengan progress bar baru kemudian simpan ke cache
         if (currentFile.type === 'video') {
-          try {
-            const token = sessionStorage.getItem('fb_token');
-            const downloadUrl = `/files/stream?path=${encodeURIComponent(currentFile.path)}&token=${token}`;
-            
-            const response = await api.get(downloadUrl, {
-              responseType: 'blob',
-              onDownloadProgress: (progressEvent) => {
-                if (active && progressEvent.total) {
-                  const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-                  setDownloadProgress(percentCompleted);
+          const needsTranscode = isTranscodingNeeded(currentFile.name);
+          
+          const downloadAndCacheVideo = async (isTranscoded = false) => {
+            try {
+              const token = sessionStorage.getItem('fb_token');
+              const downloadUrl = isTranscoded 
+                ? `/files/stream-transcoded?path=${encodeURIComponent(currentFile.path)}&token=${token}`
+                : `/files/stream?path=${encodeURIComponent(currentFile.path)}&token=${token}`;
+              
+              const response = await api.get(downloadUrl, {
+                responseType: 'blob',
+                onDownloadProgress: (progressEvent) => {
+                  if (active && progressEvent.total) {
+                    const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+                    setDownloadProgress(percentCompleted);
+                  }
+                }
+              });
+
+              if (active) {
+                const blob = response.data;
+                await mediaCache.setBlob(currentFile, blob);
+                const localBlobUrl = await mediaCache.get(currentFile);
+                if (active && localBlobUrl) {
+                  setSrcUrl(localBlobUrl);
+                  setIsLoading(false);
+                } else {
+                  const fallbackUrl = isTranscoded 
+                    ? filesAPI.getTranscodedStreamUrl(currentFile.path)
+                    : filesAPI.getStreamUrl(currentFile.path);
+                  setSrcUrl(fallbackUrl);
+                  setIsLoading(false);
                 }
               }
-            });
-
-            if (active) {
-              const blob = response.data;
-              await mediaCache.setBlob(currentFile, blob);
-              const localBlobUrl = await mediaCache.get(currentFile);
-              if (active && localBlobUrl) {
-                setSrcUrl(localBlobUrl);
-                setIsLoading(false);
-              } else {
-                setSrcUrl(streamUrl);
+            } catch (err) {
+              console.error('[MediaViewer] Gagal men-download video:', err);
+              if (active) {
+                // Fallback ke streaming jika download gagal
+                const fallbackUrl = isTranscoded 
+                  ? filesAPI.getTranscodedStreamUrl(currentFile.path)
+                  : filesAPI.getStreamUrl(currentFile.path);
+                setSrcUrl(fallbackUrl);
                 setIsLoading(false);
               }
             }
-          } catch (err) {
-            console.error('[MediaViewer] Gagal men-download video:', err);
+          };
+
+          if (needsTranscode) {
+            setIsTranscoding(true);
+            setTranscodeProgress(0);
+            
+            const checkTranscode = async (isStart = false) => {
+              try {
+                const res = await filesAPI.getTranscodeStatus(currentFile.path, isStart);
+                if (!active) return;
+                
+                const { status, progress } = res.data;
+                setTranscodeProgress(progress || 0);
+                
+                if (status === 'ready' || progress === 100) {
+                  setIsTranscoding(false);
+                  if (pollTimer) clearInterval(pollTimer);
+                  
+                  // Lanjut unduh video yang telah ditranskode
+                  await downloadAndCacheVideo(true);
+                }
+              } catch (err) {
+                console.error('[MediaViewer] Gagal cek transcode status:', err);
+                if (active) {
+                  setIsTranscoding(false);
+                  if (pollTimer) clearInterval(pollTimer);
+                  // Fallback ke direct streaming dari stream transcoded
+                  const fallbackUrl = filesAPI.getTranscodedStreamUrl(currentFile.path);
+                  setSrcUrl(fallbackUrl);
+                  setIsLoading(false);
+                }
+              }
+            };
+            
+            // Pemicu awal transcode (start=true)
+            await checkTranscode(true);
+            
             if (active) {
-              // Fallback ke streaming jika download gagal
-              setSrcUrl(streamUrl);
-              setIsLoading(false);
+              pollTimer = setInterval(() => {
+                checkTranscode(false);
+              }, 1000);
             }
+          } else {
+            // Standard video
+            await downloadAndCacheVideo(false);
           }
         }
       }
@@ -123,19 +193,20 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
 
     return () => {
       active = false;
+      if (pollTimer) clearInterval(pollTimer);
     };
   }, [currentIndex, currentFile]);
 
-  // Timeout loading state agar tidak stuck berputar selamanya jika video/gambar tidak didukung
+  // Timeout loading state agar tidak stuck berputar selamanya jika gambar tidak didukung
   useEffect(() => {
-    if (isLoading && (!isVideo || downloadProgress === 0)) {
+    if (isLoading && !isVideo) {
       const timer = setTimeout(() => {
         setIsLoading(false);
         setImageError(true);
-      }, 5000); // 5 detik timeout
+      }, 5000); // 5 detik timeout untuk gambar
       return () => clearTimeout(timer);
     }
-  }, [isLoading, isVideo, downloadProgress]);
+  }, [isLoading, isVideo]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -243,7 +314,13 @@ const MediaViewer = ({ files, initialIndex = 0, onClose }) => {
           <div className="absolute inset-0 flex items-center justify-center z-10 bg-black/40">
             <LoadingSpinner 
               size="lg" 
-              text={downloadProgress > 0 ? `Mengunduh video... ${downloadProgress}%` : "Memuat..."} 
+              text={
+                isTranscoding 
+                  ? `Mengonversi video... ${transcodeProgress}%` 
+                  : downloadProgress > 0 
+                  ? `Mengunduh video... ${downloadProgress}%` 
+                  : "Memuat..."
+              } 
             />
           </div>
         )}

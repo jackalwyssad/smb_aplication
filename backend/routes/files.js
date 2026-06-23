@@ -524,4 +524,165 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
+// Map untuk melacak proses transcoding aktif
+const activeTranscodes = new Map(); // key: fileHash, value: { progress: number, process: ChildProcess }
+
+/**
+ * GET /api/files/transcode-status
+ * Mengecek dan memicu transcoding video di latar belakang
+ */
+router.get('/transcode-status', async (req, res) => {
+  try {
+    const rawPath = req.query.path;
+    const startTranscode = req.query.start === 'true';
+    if (!rawPath) return res.status(400).json({ error: 'Parameter path diperlukan' });
+
+    const filePath = normalizeSmbPath(rawPath);
+    const filename = filePath.split('\\').pop();
+    
+    // Hitung MD5 dari path file untuk nama file unik
+    const crypto = require('crypto');
+    const fs = require('fs');
+    const path = require('path');
+    
+    const fileHash = crypto.createHash('md5').update(filePath).digest('hex');
+    const tempDir = path.join(__dirname, '../temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    const finalPath = path.join(tempDir, `${fileHash}.mp4`);
+    
+    // 1. Jika file sudah selesai di-transcode
+    if (fs.existsSync(finalPath) && !activeTranscodes.has(fileHash)) {
+      return res.json({ status: 'ready', progress: 100 });
+    }
+
+    // 2. Jika proses sedang berjalan
+    if (activeTranscodes.has(fileHash)) {
+      return res.json({
+        status: 'processing',
+        progress: activeTranscodes.get(fileHash).progress
+      });
+    }
+
+    // 3. Jika proses belum berjalan, dan dipicu untuk mulai
+    if (startTranscode) {
+      console.log(`[TRANSCODE] Memulai transcode latar belakang untuk: ${filename}`);
+      
+      const smb = getSmbFromToken(req.user);
+      const tempPath = path.join(tempDir, `${fileHash}_temp.mp4`);
+      
+      const smbStream = await smbCreateReadStream(smb, filePath);
+      const ffmpeg = spawn(ffmpegPath, [
+        '-i', 'pipe:0',
+        '-vcodec', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-acodec', 'aac',
+        '-b:a', '128k',
+        '-y',
+        tempPath
+      ]);
+
+      // Catat log stderr ke file diagnostics
+      const logFile = path.join(tempDir, `${fileHash}_ffmpeg.log`);
+      const logStream = fs.createWriteStream(logFile);
+      ffmpeg.stderr.pipe(logStream);
+
+      // Track progress
+      let durationSec = 0;
+      const transcodeObj = { progress: 0, process: ffmpeg };
+      activeTranscodes.set(fileHash, transcodeObj);
+
+      ffmpeg.stderr.on('data', (data) => {
+        const text = data.toString();
+        // Parse Duration: 00:02:47.25
+        const durationMatch = text.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+        if (durationMatch) {
+          const hours = parseInt(durationMatch[1], 10);
+          const minutes = parseInt(durationMatch[2], 10);
+          const seconds = parseFloat(durationMatch[3]);
+          durationSec = hours * 3600 + minutes * 60 + seconds;
+        }
+        
+        // Parse time=00:01:15.30
+        const timeMatch = text.match(/time=\s*(\d+):(\d+):(\d+\.\d+)/);
+        if (timeMatch && durationSec > 0) {
+          const hours = parseInt(timeMatch[1], 10);
+          const minutes = parseInt(timeMatch[2], 10);
+          const seconds = parseFloat(timeMatch[3]);
+          const currentSec = hours * 3600 + minutes * 60 + seconds;
+          transcodeObj.progress = Math.min(99, Math.round((currentSec / durationSec) * 100));
+        }
+      });
+
+      smbStream.pipe(ffmpeg.stdin);
+
+      smbStream.on('error', (err) => {
+        console.error(`[TRANSCODE] SMB stream error untuk ${filename}:`, err.message);
+        try { ffmpeg.stdin.end(); } catch (_) {}
+      });
+
+      ffmpeg.on('close', (code) => {
+        console.log(`[TRANSCODE] FFmpeg selesai dengan kode ${code} untuk: ${filename}`);
+        activeTranscodes.delete(fileHash);
+        try { smbStream.destroy(); } catch (_) {}
+        
+        if (code === 0 && fs.existsSync(tempPath)) {
+          fs.renameSync(tempPath, finalPath);
+          console.log(`[TRANSCODE] Video sukses disimpan ke cache disk: ${fileHash}.mp4`);
+          // Bersihkan file log sementara
+          try { fs.unlinkSync(logFile); } catch (_) {}
+        } else {
+          // Gagal, hapus file sementara
+          try { fs.unlinkSync(tempPath); } catch (_) {}
+        }
+      });
+
+      return res.json({ status: 'processing', progress: 0 });
+    }
+
+    // 4. Jika belum dipicu (idle)
+    return res.json({ status: 'idle', progress: 0 });
+
+  } catch (err) {
+    console.error('[TRANSCODE] Gagal cek transcode-status:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/files/stream-transcoded?path=/path/to/file
+ * Mengalirkan file hasil transcoding dengan dukungan Range (206 Partial Content) penuh dari Express
+ */
+router.get('/stream-transcoded', async (req, res) => {
+  try {
+    const rawPath = req.query.path;
+    if (!rawPath) return res.status(400).json({ error: 'Parameter path diperlukan' });
+
+    const filePath = normalizeSmbPath(rawPath);
+    const filename = filePath.split('\\').pop();
+    
+    const crypto = require('crypto');
+    const fs = require('fs');
+    const path = require('path');
+    
+    const fileHash = crypto.createHash('md5').update(filePath).digest('hex');
+    const tempFilePath = path.join(__dirname, '../temp', `${fileHash}.mp4`);
+
+    if (fs.existsSync(tempFilePath)) {
+      // Set header yang ramah untuk streaming video
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(filename)}.mp4"`);
+      // sendFile Express secara otomatis menangani Range header dan 206 Partial Content
+      return res.sendFile(tempFilePath);
+    } else {
+      return res.status(404).json({ error: 'Video transcode belum siap atau tidak ditemukan.' });
+    }
+  } catch (err) {
+    console.error('[STREAM-TRANSCODED] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
