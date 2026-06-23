@@ -8,6 +8,7 @@
     "dev": "nodemon --exec \"node --openssl-legacy-provider server.js\""
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@marsaud/smb2": "^0.18.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

@@ -1,5 +1,7 @@
 const express = require('express');
 const mime = require('mime-types');
+const { spawn } = require('child_process');
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const { authenticateToken } = require('../middleware/auth');
 const {
   createSmbClient,
@@ -169,6 +171,14 @@ router.get('/list', async (req, res) => {
   }
 });
 
+const TRANSCODE_EXTENSIONS = ['.mpeg', '.mpg', '.mkv', '.avi', '.ts', '.wmv', '.flv', '.3gp'];
+
+const isTranscodingNeeded = (filename) => {
+  if (!filename) return false;
+  const ext = '.' + filename.split('.').pop()?.toLowerCase();
+  return TRANSCODE_EXTENSIONS.includes(ext);
+};
+
 /**
  * GET /api/files/stream?path=/path/to/file
  * Stream file dari SMB2 share (untuk foto, video, dll)
@@ -193,11 +203,57 @@ router.get('/stream', async (req, res) => {
 
     const fileSize = stat.size;
     const filename = filePath.split('\\').pop();
-    let mimeType = mime.lookup(filename) || 'application/octet-stream';
+    const needsTranscoding = isTranscodingNeeded(filename);
+    let mimeType = needsTranscoding ? 'video/mp4' : (mime.lookup(filename) || 'application/octet-stream');
 
     // Override video/mpeg atau video/mpg menjadi video/mp4 agar browser dapat memutar videonya
     if (filename.toLowerCase().endsWith('.mpeg') || filename.toLowerCase().endsWith('.mpg')) {
       mimeType = 'video/mp4';
+    }
+
+    // Jalankan transcoding H.264 real-time jika format video tidak didukung browser
+    if (needsTranscoding) {
+      console.log(`[STREAM] Transcoding file: ${filename} on-the-fly to Fragmented MP4`);
+      
+      res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'Transfer-Encoding': 'chunked',
+        'Cache-Control': 'no-cache',
+      });
+
+      const smbStream = await smbCreateReadStream(smb, filePath);
+      const ffmpeg = spawn(ffmpegPath, [
+        '-i', 'pipe:0',                          // Input dari stdin
+        '-vcodec', 'libx264',                     // Video H.264
+        '-preset', 'ultrafast',                  // Preset tercepat & hemat CPU
+        '-tune', 'zerolatency',                  // Zero delay
+        '-acodec', 'aac',                        // Audio AAC
+        '-b:a', '128k',                          // Audio bitrate
+        '-f', 'mp4',                             // Container format MP4
+        '-movflags', 'frag_keyframe+empty_moov', // Fragmented MP4 agar bisa di-stream
+        'pipe:1'                                 // Output ke stdout
+      ]);
+
+      smbStream.pipe(ffmpeg.stdin);
+      ffmpeg.stdout.pipe(res);
+
+      smbStream.on('error', (err) => {
+        console.error('[STREAM] SMB stream error:', err.message);
+        try { ffmpeg.stdin.end(); } catch (_) {}
+      });
+
+      ffmpeg.on('error', (err) => {
+        console.error('[STREAM] FFmpeg spawn error:', err.message);
+        if (!res.headersSent) res.status(500).end();
+      });
+
+      req.on('close', () => {
+        console.log(`[STREAM] Client disconnected. Killing FFmpeg for: ${filename}`);
+        try { smbStream.destroy(); } catch (_) {}
+        try { ffmpeg.kill('SIGKILL'); } catch (_) {}
+      });
+
+      return;
     }
 
     // Handle Range request untuk video streaming
