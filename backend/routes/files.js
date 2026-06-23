@@ -380,8 +380,60 @@ router.get('/thumbnail', async (req, res) => {
 
     // Buat client SMB baru
     const smb = getSmbFromToken(req.user);
-    const stream = await smbCreateReadStream(smb, filePath);
+    const isVideo = mimeType.startsWith('video/');
 
+    if (isVideo) {
+      console.log(`[THUMBNAIL] Mengekstrak frame video dari SMB stream untuk: ${filename}`);
+      
+      const stream = await smbCreateReadStream(smb, filePath);
+      const ffmpeg = spawn(ffmpegPath, [
+        '-i', 'pipe:0',          // Input dari stdin
+        '-ss', '1',              // Cari ke detik ke-1
+        '-vframes', '1',         // Hanya ambil 1 frame
+        '-f', 'image2',          // Container format
+        '-vcodec', 'mjpeg',      // MJPEG
+        '-'                      // Output ke stdout
+      ]);
+
+      const imageChunks = [];
+      ffmpeg.stdout.on('data', (chunk) => imageChunks.push(chunk));
+      
+      ffmpeg.on('close', (code) => {
+        try { stream.destroy(); } catch (_) {}
+        
+        if (code === 0 && imageChunks.length > 0) {
+          const buf = Buffer.concat(imageChunks);
+          setCachedThumbnail(cacheKey, buf, 'image/jpeg');
+          
+          res.setHeader('Content-Type', 'image/jpeg');
+          res.setHeader('Content-Length', buf.length);
+          res.setHeader('Cache-Control', 'private, max-age=86400');
+          res.setHeader('X-Cache', 'MISS');
+          return res.end(buf);
+        } else {
+          console.error(`[THUMBNAIL] FFmpeg selesai dengan kode ${code} (gagal ekstrak frame video)`);
+          if (!res.headersSent) res.status(500).end();
+        }
+      });
+
+      stream.pipe(ffmpeg.stdin);
+
+      stream.on('error', (err) => {
+        console.error('[THUMBNAIL] SMB stream error:', err.message);
+        try { ffmpeg.stdin.end(); } catch (_) {}
+      });
+
+      ffmpeg.on('error', (err) => {
+        console.error('[THUMBNAIL] FFmpeg spawn error:', err.message);
+        try { stream.destroy(); } catch (_) {}
+        if (!res.headersSent) res.status(500).end();
+      });
+
+      return;
+    }
+
+    // Untuk image/dokumen biasa
+    const stream = await smbCreateReadStream(smb, filePath);
     const chunks = [];
     stream.on('data', (chunk) => chunks.push(chunk));
     stream.on('end', () => {

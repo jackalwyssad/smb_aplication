@@ -21,14 +21,6 @@ const getVideoColor = (name) => {
   return colors[Math.abs(hash) % colors.length];
 };
 
-const SUPPORTED_VIDEO_EXTENSIONS = ['mp4', 'webm', 'ogg', 'mov'];
-
-const isSupportedVideo = (filename) => {
-  if (!filename) return false;
-  const ext = filename.split('.').pop()?.toLowerCase();
-  return SUPPORTED_VIDEO_EXTENSIONS.includes(ext);
-};
-
 /**
  * Thumbnail dengan lazy loading dan local cache
  */
@@ -36,7 +28,6 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
   const [srcUrl, setSrcUrl] = useState('');
   const [mediaStatus, setMediaStatus] = useState('idle'); // idle | loading | loaded | error
   const [visible, setVisible] = useState(false);
-  const [isThumbCached, setIsThumbCached] = useState(false);
   const containerRef = useRef(null);
 
   const isImage = file.type === 'image';
@@ -75,24 +66,21 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
       if (cachedThumb) {
         setSrcUrl(cachedThumb);
         setMediaStatus('loaded');
-        setIsThumbCached(true);
         return;
       }
 
-      // 2. Jika tidak ada di thumbnail cache, gunakan URL network
-      const rawUrl = isImage
-        ? filesAPI.getThumbnailUrl(file.path)
-        : filesAPI.getStreamUrl(file.path);
+      // 2. Jika tidak ada di cache, gunakan URL thumbnail dari API backend
+      const rawUrl = filesAPI.getThumbnailUrl(file.path);
       setSrcUrl(rawUrl);
     };
 
     resolveMediaUrl();
   }, [visible, file, isImage, isVideo]);
 
-  // Simpan gambar ke thumbnail cache jika berhasil dimuat dari network
+  // Simpan ke cache setelah berhasil dimuat dari network
   const handleImageLoad = async () => {
     setMediaStatus('loaded');
-    if (srcUrl && !srcUrl.startsWith('blob:') && isImage) {
+    if (srcUrl && !srcUrl.startsWith('blob:')) {
       try {
         const response = await fetch(srcUrl);
         if (response.ok) {
@@ -102,7 +90,7 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
           await mediaCache.setFailedThumbnail(file);
         }
       } catch (err) {
-        console.warn('[MediaThumbnail] Gagal menyimpan thumbnail gambar ke cache:', err);
+        console.warn('[MediaThumbnail] Gagal menyimpan thumbnail ke cache:', err);
         await mediaCache.setFailedThumbnail(file);
       }
     }
@@ -114,58 +102,6 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
       mediaCache.setFailedThumbnail(file);
     }
   };
-
-  // Ekstrak frame video pertama ke canvas dan simpan ke thumbnail cache
-  const handleVideoLoad = async (e) => {
-    setMediaStatus('loaded');
-    if (srcUrl && !srcUrl.startsWith('blob:') && isVideo && !isThumbCached) {
-      try {
-        const video = e.target;
-        const canvas = document.createElement('canvas');
-        canvas.width = 320;
-        canvas.height = 240;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob(async (blob) => {
-            if (blob) {
-              await mediaCache.setThumbnail(file, blob);
-              const localThumbUrl = await mediaCache.getThumbnail(file);
-              if (localThumbUrl) {
-                setSrcUrl(localThumbUrl);
-                setIsThumbCached(true);
-              }
-            } else {
-              await mediaCache.setFailedThumbnail(file);
-            }
-          }, 'image/jpeg', 0.6);
-        } else {
-          await mediaCache.setFailedThumbnail(file);
-        }
-      } catch (err) {
-        console.warn('[MediaThumbnail] Gagal mengekstrak frame video:', err);
-        await mediaCache.setFailedThumbnail(file);
-      }
-    }
-  };
-
-  const handleVideoError = () => {
-    setMediaStatus('error');
-    if (srcUrl && !srcUrl.startsWith('blob:')) {
-      mediaCache.setFailedThumbnail(file);
-    }
-  };
-
-  // Timeout loading video agar tidak stuck di skeleton jika format video tidak disupport browser
-  useEffect(() => {
-    if (visible && isVideo && mediaStatus === 'loading' && !isThumbCached) {
-      const timer = setTimeout(() => {
-        setMediaStatus('error');
-        mediaCache.setFailedThumbnail(file);
-      }, 5000); // 5 detik timeout
-      return () => clearTimeout(timer);
-    }
-  }, [visible, mediaStatus, isVideo, isThumbCached]);
 
   // ============ RENDER LOGIC ============
   const gradient = isVideo ? getVideoColor(file.name) : '';
@@ -183,8 +119,8 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
         <div className="absolute inset-0 bg-dark-850 animate-pulse" />
       )}
 
-      {/* Render Gambar (untuk image asli, atau video yang sudah memiliki cached image thumbnail) */}
-      {visible && srcUrl && mediaStatus !== 'error' && (isImage || isThumbCached) && (
+      {/* Render Gambar (untuk image asli, atau video frame yang di-generate backend) */}
+      {visible && srcUrl && mediaStatus !== 'error' && (
         <img
           src={srcUrl}
           alt={file.name}
@@ -198,24 +134,7 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
         />
       )}
 
-      {/* Render Video Player mini (hanya jika video belum di-cache thumbnail-nya) */}
-      {visible && srcUrl && mediaStatus !== 'error' && isVideo && !isThumbCached && (
-        <video
-          src={srcUrl}
-          className={clsx(
-            'w-full h-full transition-opacity duration-300',
-            objectFit === 'contain' ? 'object-contain' : 'object-cover',
-            mediaStatus === 'loaded' ? 'opacity-100' : 'opacity-0'
-          )}
-          preload="metadata"
-          muted
-          playsInline
-          onLoadedData={handleVideoLoad}
-          onError={handleVideoError}
-        />
-      )}
-
-      {/* Fallback ke gradient jika video error / tidak didukung browser */}
+      {/* Fallback ke gradient jika error */}
       {mediaStatus === 'error' && (
         isVideo ? (
           <div className={clsx('absolute inset-0 bg-gradient-to-br flex items-center justify-center', gradient)}>
@@ -228,7 +147,7 @@ const MediaThumbnail = ({ file, className, objectFit = 'cover' }) => {
         )
       )}
 
-      {/* Play button overlay jika ini adalah video (baik sedang dimuat sebagai video atau gambar cached) */}
+      {/* Play button overlay untuk video */}
       {isVideo && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/15">
           <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-sm border border-white/30 flex items-center justify-center shadow-lg">
