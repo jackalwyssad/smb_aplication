@@ -221,6 +221,13 @@ router.get('/stream', async (req, res) => {
         'Cache-Control': 'no-cache',
       });
 
+      const fs = require('fs');
+      const path = require('path');
+      const logFile = path.join(__dirname, '../ffmpeg.log');
+      try {
+        fs.writeFileSync(logFile, `=== TRANSCODE START: ${filename} ===\n`);
+      } catch (_) {}
+
       const smbStream = await smbCreateReadStream(smb, filePath);
       const ffmpeg = spawn(ffmpegPath, [
         '-i', 'pipe:0',                          // Input dari stdin
@@ -233,6 +240,11 @@ router.get('/stream', async (req, res) => {
         '-movflags', 'frag_keyframe+empty_moov', // Fragmented MP4 agar bisa di-stream
         'pipe:1'                                 // Output ke stdout
       ]);
+
+      try {
+        const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+        ffmpeg.stderr.pipe(logStream);
+      } catch (_) {}
 
       smbStream.pipe(ffmpeg.stdin);
       ffmpeg.stdout.pipe(res);
