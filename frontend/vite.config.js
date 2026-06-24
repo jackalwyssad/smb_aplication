@@ -6,23 +6,22 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    host: true, // Agar bisa diakses dari HP di jaringan yang sama
+    host: true,
     proxy: {
-      // Rute upload-stream: tidak buffer, timeout panjang
-      '/api/files/upload-stream': {
+      // Upload chunks: tanpa timeout, tidak di-buffer
+      '/api/files/upload-chunk': {
         target: 'http://localhost:3001',
         changeOrigin: true,
         secure: false,
-        proxyTimeout: 0,       // Tanpa batas waktu proxy
-        timeout: 0,            // Tanpa batas waktu koneksi
-        configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq) => {
-            // Forward X-Filename header agar tidak terstrip
-            proxyReq.setHeader('connection', 'keep-alive');
-          });
-        },
+        proxyTimeout: 0,
+        timeout: 0,
       },
-      // Rute lainnya
+      '/api/files/upload-cancel': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        secure: false,
+      },
+      // Semua route API lainnya
       '/api': {
         target: 'http://localhost:3001',
         changeOrigin: true,
@@ -36,3 +35,4 @@ export default defineConfig({
     chunkSizeWarningLimit: 1600,
   }
 })
+

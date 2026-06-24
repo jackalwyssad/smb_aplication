@@ -40,15 +40,15 @@ const limiter = rateLimit({
 });
 app.use('/api/auth', limiter);
 
-// Body parser — KECUALI untuk upload-stream yang menggunakan raw piped stream
+// Body parser — KECUALI untuk upload-chunk dan upload-cancel yang menggunakan raw piped stream
 app.use((req, res, next) => {
-  if (req.path === '/api/files/upload-stream') {
-    return next(); // Lewati body parser untuk upload stream
+  if (req.path.startsWith('/api/files/upload-chunk') || req.path.startsWith('/api/files/upload-cancel')) {
+    return next(); // Lewati body parser
   }
   express.json({ limit: '10mb' })(req, res, next);
 });
 app.use((req, res, next) => {
-  if (req.path === '/api/files/upload-stream') {
+  if (req.path.startsWith('/api/files/upload-chunk') || req.path.startsWith('/api/files/upload-cancel')) {
     return next();
   }
   express.urlencoded({ extended: true })(req, res, next);

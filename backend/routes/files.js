@@ -539,80 +539,113 @@ router.post('/rename', async (req, res) => {
   }
 });
 
+const fs = require('fs');
+const pathModule = require('path');
+
 /**
- * POST /api/files/upload-stream?path=/folder/path
- * Upload file via raw binary stream — tidak ada multipart overhead
- * Filename diambil dari header X-Filename, path dari query string
- * Frontend kirim file langsung sebagai request body (Content-Type: application/octet-stream)
+ * POST /api/files/upload-chunk
+ * Terima file dalam potongan kecil (chunks) lalu rakit ke SMB.
+ * Query params:
+ *   - uploadId  : ID unik sesi upload (dari frontend)
+ *   - index     : Nomor urut chunk (0-based)
+ *   - total     : Total jumlah chunk
+ *   - filename  : Nama file (URI encoded)
+ *   - path      : Folder tujuan di SMB
+ *   - isLast    : 'true' jika ini chunk terakhir
+ * Body: raw binary data (application/octet-stream)
  */
-router.post('/upload-stream', async (req, res) => {
+router.post('/upload-chunk', async (req, res) => {
   try {
-    const rawPath = req.query.path || '/';
-    const rawFilename = req.headers['x-filename'];
-    if (!rawFilename) {
-      return res.status(400).json({ error: 'Header X-Filename diperlukan' });
+    const { uploadId, total, path: uploadPath, isLast } = req.query;
+    const chunkIndex = parseInt(req.query.index);
+
+    if (!uploadId || isNaN(chunkIndex)) {
+      return res.status(400).json({ error: 'Parameter tidak valid' });
     }
-    
-    // Decode filename dari UTF-8 URI encoding
+
     let filename;
-    try {
-      filename = decodeURIComponent(rawFilename);
-    } catch (_) {
-      filename = rawFilename;
-    }
-    
-    const parentPath = normalizeSmbPath(rawPath);
-    const destPath = parentPath ? `${parentPath}\\${filename}` : filename;
-    
-    console.log(`[UPLOAD] Streaming binary upload: ${filename} -> ${destPath}`);
-    
-    const smb = getSmbFromToken(req.user);
-    const writeStream = await smbCreateWriteStream(smb, destPath);
-    
-    // Pipe request body langsung ke SMB write stream
+    try { filename = decodeURIComponent(req.query.filename); }
+    catch (_) { filename = req.query.filename || `upload_${Date.now()}`; }
+
+    // Buat direktori temp
+    const tempDir = pathModule.join(__dirname, '../temp/chunks');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+
+    // Tulis chunk ke file temp lokal (cepat, no SMB timeout)
+    const chunkPath = pathModule.join(tempDir, `${uploadId}_${chunkIndex}`);
     await new Promise((resolve, reject) => {
-      let finished = false;
-      
-      const cleanup = (err) => {
-        if (finished) return;
-        finished = true;
-        if (err) reject(err);
-        else resolve();
-      };
-      
-      writeStream.on('finish', () => cleanup(null));
-      writeStream.on('error', (err) => {
-        console.error('[UPLOAD] SMB write error:', err.message);
-        try { req.destroy(); } catch (_) {}
-        cleanup(err);
-      });
-      
-      req.on('error', (err) => {
-        console.error('[UPLOAD] Request stream error:', err.message);
-        try { writeStream.destroy(); } catch (_) {}
-        cleanup(err);
-      });
-      
-      req.on('aborted', () => {
-        console.warn('[UPLOAD] Request aborted by client');
-        try { writeStream.destroy(); } catch (_) {}
-        cleanup(new Error('Upload dibatalkan oleh klien'));
-      });
-      
+      const writeStream = fs.createWriteStream(chunkPath);
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+      req.on('error', reject);
+      req.on('aborted', () => reject(new Error('Dibatalkan')));
       req.pipe(writeStream);
     });
-    
+
+    // Jika bukan chunk terakhir, langsung balas OK
+    if (isLast !== 'true') {
+      return res.json({ ok: true, received: chunkIndex });
+    }
+
+    // === Chunk terakhir: rakit semua chunk dan kirim ke SMB ===
+    const totalChunks = parseInt(total);
+    const smb = getSmbFromToken(req.user);
+    const parentPath = normalizeSmbPath(uploadPath || '/');
+    const destPath = parentPath ? `${parentPath}\\${filename}` : filename;
+
+    console.log(`[UPLOAD] Assembling ${totalChunks} chunks → ${destPath}`);
+    const smbWriteStream = await smbCreateWriteStream(smb, destPath);
+
+    await new Promise((resolve, reject) => {
+      let idx = 0;
+
+      const pipeNext = () => {
+        if (idx >= totalChunks) {
+          smbWriteStream.end();
+          return;
+        }
+        const p = pathModule.join(tempDir, `${uploadId}_${idx}`);
+        const rs = fs.createReadStream(p);
+        rs.on('error', reject);
+        rs.on('end', () => { idx++; pipeNext(); });
+        rs.pipe(smbWriteStream, { end: false });
+      };
+
+      smbWriteStream.on('finish', resolve);
+      smbWriteStream.on('error', reject);
+      pipeNext();
+    });
+
+    // Bersihkan file chunk temp
+    for (let i = 0; i < totalChunks; i++) {
+      try { fs.unlinkSync(pathModule.join(tempDir, `${uploadId}_${i}`)); } catch (_) {}
+    }
+
     console.log(`[UPLOAD] Selesai: ${filename}`);
     res.json({ success: true, message: `File "${filename}" berhasil diunggah` });
-    
+
   } catch (err) {
-    console.error('[UPLOAD] Error:', err.message);
+    console.error('[UPLOAD CHUNK] Error:', err.message);
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Gagal mengunggah file: ' + err.message });
+      res.status(500).json({ error: 'Gagal upload chunk: ' + err.message });
     }
   }
 });
 
+/**
+ * DELETE /api/files/upload-cancel?uploadId=xxx&total=N
+ * Hapus sisa chunk temp jika upload dibatalkan
+ */
+router.delete('/upload-cancel', (req, res) => {
+  const { uploadId, total } = req.query;
+  if (!uploadId) return res.status(400).json({ error: 'uploadId diperlukan' });
+  const tempDir = pathModule.join(__dirname, '../temp/chunks');
+  const n = parseInt(total) || 100;
+  for (let i = 0; i < n; i++) {
+    try { fs.unlinkSync(pathModule.join(tempDir, `${uploadId}_${i}`)); } catch (_) {}
+  }
+  res.json({ ok: true });
+});
 
 // Map untuk melacak proses transcoding aktif
 const activeTranscodes = new Map(); // key: fileHash, value: { progress: number, process: ChildProcess }

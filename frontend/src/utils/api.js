@@ -100,47 +100,94 @@ export const filesAPI = {
 
   rename: (path, newName) => api.post('/files/rename', { path, newName }),
 
-  // Upload file sebagai raw binary stream via XHR (tidak via axios)
-  // XHR memberikan progress upload yang akurat dan menghindari timeout proxy
-  upload: (path, file, onProgress) => {
+  // Upload file sebagai chunked upload via XHR
+  // Mengirim file dalam potongan 5MB untuk mencegah timeout dan mendukung batal (cancel)
+  upload: (path, file, onProgress, cancelRef) => {
     return new Promise((resolve, reject) => {
       const token = sessionStorage.getItem('fb_token');
       const encodedPath = encodeURIComponent(path);
       const encodedFilename = encodeURIComponent(file.name);
-      const url = `${BASE_URL}/files/upload-stream?path=${encodedPath}&token=${token}`;
+      
+      const chunkSize = 5 * 1024 * 1024; // 5MB chunks
+      const totalChunks = Math.ceil(file.size / chunkSize);
+      const uploadId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      
+      let currentChunkIndex = 0;
+      let currentXhr = null;
+      let isCancelled = false;
 
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', url, true);
-      xhr.setRequestHeader('X-Filename', encodedFilename);
-      xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+      const uploadNextChunk = () => {
+        if (isCancelled) return;
 
-      xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable && onProgress) {
-          onProgress({ loaded: e.loaded, total: e.total });
+        if (currentChunkIndex >= totalChunks) {
+          resolve({ success: true });
+          return;
         }
-      });
 
-      xhr.addEventListener('load', () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            resolve(JSON.parse(xhr.responseText));
-          } catch (_) {
-            resolve({ success: true });
+        const start = currentChunkIndex * chunkSize;
+        const end = Math.min(start + chunkSize, file.size);
+        const chunk = file.slice(start, end);
+        const isLast = (currentChunkIndex === totalChunks - 1).toString();
+
+        const url = `${BASE_URL}/files/upload-chunk?uploadId=${uploadId}&index=${currentChunkIndex}&total=${totalChunks}&filename=${encodedFilename}&path=${encodedPath}&isLast=${isLast}&token=${token}`;
+
+        const xhr = new XMLHttpRequest();
+        currentXhr = xhr;
+        xhr.open('POST', url, true);
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+        xhr.upload.addEventListener('progress', (e) => {
+          if (isCancelled) return;
+          if (e.lengthComputable && onProgress) {
+            const loadedBytes = start + e.loaded;
+            onProgress({ loaded: loadedBytes, total: file.size });
           }
-        } else {
-          let errorMsg = 'Upload gagal';
-          try {
-            const parsed = JSON.parse(xhr.responseText);
-            errorMsg = parsed.error || errorMsg;
-          } catch (_) {}
-          reject(new Error(errorMsg));
-        }
-      });
+        });
 
-      xhr.addEventListener('error', () => reject(new Error('Koneksi gagal saat upload')));
-      xhr.addEventListener('abort', () => reject(new Error('Upload dibatalkan')));
+        xhr.addEventListener('load', () => {
+          if (isCancelled) return;
+          if (xhr.status >= 200 && xhr.status < 300) {
+            currentChunkIndex++;
+            uploadNextChunk();
+          } else {
+            let errorMsg = 'Upload gagal';
+            try {
+              const parsed = JSON.parse(xhr.responseText);
+              errorMsg = parsed.error || errorMsg;
+            } catch (_) {}
+            reject(new Error(errorMsg));
+          }
+        });
 
-      xhr.send(file); // Kirim file langsung sebagai body (raw binary)
+        xhr.addEventListener('error', () => {
+          if (isCancelled) return;
+          reject(new Error('Koneksi gagal saat upload'));
+        });
+
+        xhr.addEventListener('abort', () => {
+          reject(new Error('Upload dibatalkan'));
+        });
+
+        xhr.send(chunk);
+      };
+
+      if (cancelRef) {
+        cancelRef.cancel = () => {
+          isCancelled = true;
+          if (currentXhr) {
+            currentXhr.abort();
+          }
+          // Panggil API cancel ke backend untuk membersihkan chunk temp
+          const cancelUrl = `${BASE_URL}/files/upload-cancel?uploadId=${uploadId}&total=${totalChunks}&token=${token}`;
+          axios.delete(cancelUrl).catch(err => {
+            console.error('[UPLOAD] Gagal membatalkan upload di backend:', err.message);
+          });
+          reject(new Error('Upload dibatalkan oleh pengguna'));
+        };
+      }
+
+      uploadNextChunk();
     });
   },
   // URL untuk streaming langsung (digunakan sebagai src di img/video)

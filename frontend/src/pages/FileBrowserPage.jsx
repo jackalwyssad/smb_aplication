@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   ArrowLeft, LogOut, RefreshCw, Grid2X2, List,
   LayoutGrid, AlertCircle, FolderOpen, Server,
@@ -72,6 +72,24 @@ const FileBrowserPage = () => {
   const [uploadTotal, setUploadTotal] = useState(0);       // total in queue
   const [uploadDone, setUploadDone] = useState(false);     // all done flag
   const [showUploadPicker, setShowUploadPicker] = useState(false);
+
+  // Refs untuk pembatalan upload
+  const cancelUploadRef = useRef(null);
+  const isCancelledRef = useRef(false);
+
+  // Mencegah refresh/navigasi tidak sengaja saat upload berlangsung
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      if (uploadingFile) {
+        const msg = 'Upload sedang berlangsung. Jika Anda keluar atau me-refresh, upload akan gagal.';
+        e.preventDefault();
+        e.returnValue = msg;
+        return msg;
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [uploadingFile]);
 
   // Media viewer state
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -271,32 +289,57 @@ const FileBrowserPage = () => {
     setUploadCurrent(0);
     setUploadDone(false);
     setShowFabMenu(false);
+    isCancelledRef.current = false;
 
     for (let i = 0; i < filesToUpload.length; i++) {
+      if (isCancelledRef.current) break;
+
       const file = filesToUpload[i];
       setUploadingFile(file.name);
       setUploadProgress(0);
       setUploadCurrent(i + 1);
 
       try {
+        const cancelObj = { cancel: null };
+        cancelUploadRef.current = () => {
+          if (cancelObj.cancel) cancelObj.cancel();
+        };
+
         await filesAPI.upload(currentPath, file, (progressEvent) => {
           if (progressEvent.total) {
             const pct = Math.round((progressEvent.loaded * 100) / progressEvent.total);
             setUploadProgress(pct);
           }
-        });
+        }, cancelObj);
+
+        // Realtime refresh: Refresh list file segera setelah file ini berhasil
+        await loadFiles(currentPath, true);
+
       } catch (err) {
-        // Tampilkan error tapi lanjutkan upload file berikutnya
-        console.error('[UPLOAD] Gagal upload file:', file.name, err.message);
+        console.error('[UPLOAD] Gagal atau dibatalkan upload file:', file.name, err.message);
+        if (isCancelledRef.current) break;
+      } finally {
+        cancelUploadRef.current = null;
       }
     }
 
-    // Semua selesai
+    const wasCancelled = isCancelledRef.current;
     setUploadingFile('');
-    setUploadDone(true);
-    setTimeout(() => setUploadDone(false), 2500);
-    await loadFiles(currentPath, true);
+    cancelUploadRef.current = null;
+
+    if (!wasCancelled) {
+      setUploadDone(true);
+      setTimeout(() => setUploadDone(false), 2500);
+    }
   }, [currentPath, loadFiles]);
+
+  const handleCancelUpload = useCallback(() => {
+    isCancelledRef.current = true;
+    if (cancelUploadRef.current) {
+      cancelUploadRef.current();
+    }
+    setUploadingFile('');
+  }, []);
 
   const handleLogout = async () => {
     folderCache.clear();
@@ -510,7 +553,16 @@ const FileBrowserPage = () => {
               <div className="bg-accent-500 h-1 rounded-full transition-all duration-150" style={{ width: `${uploadProgress}%` }} />
             </div>
           </div>
-          <span className="text-dark-400 text-[10px] font-bold flex-shrink-0">{uploadProgress}%</span>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="text-dark-400 text-[10px] font-bold">{uploadProgress}%</span>
+            <button
+              onClick={handleCancelUpload}
+              className="p-1 rounded-lg text-dark-400 hover:text-red-400 hover:bg-dark-800/80 active:scale-95 transition-all"
+              title="Batal Unggah"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       )}
 
