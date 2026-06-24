@@ -12,6 +12,40 @@ const api = axios.create({
   },
 });
 
+// Axios instance khusus untuk upload (tanpa timeout)
+const uploadApi = axios.create({
+  baseURL: BASE_URL,
+  timeout: 0, // Tanpa batas waktu untuk file besar
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Tambah token ke upload requests juga
+uploadApi.interceptors.request.use(
+  (config) => {
+    const token = sessionStorage.getItem('fb_token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+uploadApi.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      sessionStorage.removeItem('fb_token');
+      sessionStorage.removeItem('fb_user');
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Request interceptor - tambah token ke setiap request
 api.interceptors.request.use(
   (config) => {
@@ -70,10 +104,8 @@ export const filesAPI = {
     const formData = new FormData();
     formData.append('path', path);
     formData.append('file', file);
-    return api.post('/files/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
+    return uploadApi.post('/files/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress,
     });
   },

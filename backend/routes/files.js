@@ -17,8 +17,7 @@ const {
   detectFileType,
   normalizeSmbPath,
 } = require('../utils/smb');
-const multer = require('multer');
-const upload = multer({ storage: multer.memoryStorage() });
+const Busboy = require('busboy');
 
 const router = express.Router();
 
@@ -542,31 +541,83 @@ router.post('/rename', async (req, res) => {
 
 /**
  * POST /api/files/upload
- * Upload file (foto, video, dll)
+ * Upload file via busboy streaming — tidak buffer file besar di memory server
  */
-router.post('/upload', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: 'Tidak ada file yang diunggah' });
-    
-    const path = req.body.path || '/';
-    const parentPath = normalizeSmbPath(path);
-    const filename = req.file.originalname;
-    const destPath = parentPath ? `${parentPath}\\${filename}` : filename;
-    
-    const smb = getSmbFromToken(req.user);
-    
-    const writeStream = await smbCreateWriteStream(smb, destPath);
-    await new Promise((resolve, reject) => {
-      writeStream.on('finish', resolve);
-      writeStream.on('error', reject);
-      writeStream.end(req.file.buffer);
-    });
-    
-    res.json({ success: true, message: `File "${filename}" berhasil diunggah` });
-  } catch (err) {
-    console.error('[FILES] Upload error:', err.message);
-    res.status(500).json({ error: 'Gagal mengunggah file: ' + err.message });
+router.post('/upload', (req, res) => {
+  // Pastikan content-type adalah multipart
+  if (!req.headers['content-type'] || !req.headers['content-type'].includes('multipart/form-data')) {
+    return res.status(400).json({ error: 'Content-Type harus multipart/form-data' });
   }
+
+  let uploadPath = '/';
+  let uploadedCount = 0;
+  let filePromise = null;
+
+  const bb = Busboy({ 
+    headers: req.headers,
+    limits: { fileSize: Infinity } // tidak ada batas ukuran file
+  });
+
+  // Tangkap field 'path' terlebih dahulu
+  bb.on('field', (name, value) => {
+    if (name === 'path') uploadPath = value;
+  });
+
+  bb.on('file', (fieldname, fileStream, info) => {
+    const { filename } = info;
+    const safeFilename = filename || `upload_${Date.now()}`;
+
+    // Jalankan proses upload secara async
+    filePromise = (async () => {
+      try {
+        const parentPath = normalizeSmbPath(uploadPath);
+        const destPath = parentPath ? `${parentPath}\\${safeFilename}` : safeFilename;
+
+        console.log(`[UPLOAD] Memulai upload streaming: ${safeFilename} -> ${destPath}`);
+        const smb = getSmbFromToken(req.user);
+        const writeStream = await smbCreateWriteStream(smb, destPath);
+
+        await new Promise((resolve, reject) => {
+          writeStream.on('finish', resolve);
+          writeStream.on('error', (err) => {
+            fileStream.destroy();
+            reject(err);
+          });
+          fileStream.on('error', (err) => {
+            writeStream.destroy();
+            reject(err);
+          });
+          fileStream.pipe(writeStream);
+        });
+
+        uploadedCount++;
+        console.log(`[UPLOAD] Selesai: ${safeFilename}`);
+      } catch (err) {
+        console.error(`[UPLOAD] Gagal upload ${safeFilename}:`, err.message);
+        throw err;
+      }
+    })();
+  });
+
+  bb.on('finish', async () => {
+    try {
+      if (filePromise) await filePromise;
+      res.json({ success: true, message: `${uploadedCount} file berhasil diunggah` });
+    } catch (err) {
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Gagal mengunggah file: ' + err.message });
+      }
+    }
+  });
+
+  bb.on('error', (err) => {
+    console.error('[UPLOAD] Busboy error:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Gagal memproses upload: ' + err.message });
+    }
+  });
+
+  req.pipe(bb);
 });
 
 // Map untuk melacak proses transcoding aktif

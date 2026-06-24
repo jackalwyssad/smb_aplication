@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import {
   ArrowLeft, LogOut, RefreshCw, Grid2X2, List,
   LayoutGrid, AlertCircle, FolderOpen, Server,
-  Plus, Upload, FolderPlus, X, Edit, Trash2, Download
+  Plus, Upload, FolderPlus, X, Edit, Trash2, Download, CheckCircle2
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { filesAPI } from '../utils/api';
@@ -12,6 +12,7 @@ import Breadcrumb from '../components/Breadcrumb';
 import LoadingSpinner from '../components/LoadingSpinner';
 import MediaViewer from '../components/MediaViewer';
 import FileIcon from '../components/FileIcon';
+import UploadPickerModal from '../components/UploadPickerModal';
 import { FileGridItem, FileListItem, GalleryGridItem } from '../components/FileItem';
 import clsx from 'clsx';
 
@@ -64,8 +65,13 @@ const FileBrowserPage = () => {
   const [newName, setNewName] = useState('');
 
   // Upload State
-  const [uploadingFile, setUploadingFile] = useState('');
-  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadQueue, setUploadQueue] = useState([]); // array of File objects
+  const [uploadingFile, setUploadingFile] = useState('');  // current file name
+  const [uploadProgress, setUploadProgress] = useState(0); // current file %
+  const [uploadCurrent, setUploadCurrent] = useState(0);   // index in queue
+  const [uploadTotal, setUploadTotal] = useState(0);       // total in queue
+  const [uploadDone, setUploadDone] = useState(false);     // all done flag
+  const [showUploadPicker, setShowUploadPicker] = useState(false);
 
   // Media viewer state
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -256,26 +262,41 @@ const FileBrowserPage = () => {
     }
   };
 
-  const handleFileUpload = async (e) => {
-    const selectedFile = e.target.files[0];
-    if (!selectedFile) return;
+  // Memulai upload antrian file secara sequential
+  const handleStartUpload = useCallback(async (filesToUpload) => {
+    if (!filesToUpload || filesToUpload.length === 0) return;
 
-    setUploadingFile(selectedFile.name);
-    setUploadProgress(0);
+    const total = filesToUpload.length;
+    setUploadTotal(total);
+    setUploadCurrent(0);
+    setUploadDone(false);
     setShowFabMenu(false);
 
-    try {
-      await filesAPI.upload(currentPath, selectedFile, (progressEvent) => {
-        const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-        setUploadProgress(percentCompleted);
-      });
-      setUploadingFile('');
-      await loadFiles(currentPath, true);
-    } catch (err) {
-      alert(err.response?.data?.error || 'Gagal mengunggah file');
-      setUploadingFile('');
+    for (let i = 0; i < filesToUpload.length; i++) {
+      const file = filesToUpload[i];
+      setUploadingFile(file.name);
+      setUploadProgress(0);
+      setUploadCurrent(i + 1);
+
+      try {
+        await filesAPI.upload(currentPath, file, (progressEvent) => {
+          if (progressEvent.total) {
+            const pct = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            setUploadProgress(pct);
+          }
+        });
+      } catch (err) {
+        // Tampilkan error tapi lanjutkan upload file berikutnya
+        console.error('[UPLOAD] Gagal upload file:', file.name, err.message);
+      }
     }
-  };
+
+    // Semua selesai
+    setUploadingFile('');
+    setUploadDone(true);
+    setTimeout(() => setUploadDone(false), 2500);
+    await loadFiles(currentPath, true);
+  }, [currentPath, loadFiles]);
 
   const handleLogout = async () => {
     folderCache.clear();
@@ -481,12 +502,25 @@ const FileBrowserPage = () => {
         <div className="fixed bottom-24 left-4 right-4 z-40 max-w-sm mx-auto p-3.5 rounded-2xl bg-dark-900 border border-dark-800 shadow-2xl flex items-center gap-3 animate-slide-up">
           <LoadingSpinner size="sm" />
           <div className="flex-1 min-w-0">
-            <p className="text-dark-100 text-xs font-semibold truncate">Mengunggah: {uploadingFile}</p>
+            <p className="text-dark-100 text-xs font-semibold truncate">
+              {uploadTotal > 1 ? `File ${uploadCurrent}/${uploadTotal}: ` : 'Mengunggah: '}
+              {uploadingFile}
+            </p>
             <div className="w-full bg-dark-800 rounded-full h-1 mt-1.5 overflow-hidden">
               <div className="bg-accent-500 h-1 rounded-full transition-all duration-150" style={{ width: `${uploadProgress}%` }} />
             </div>
           </div>
           <span className="text-dark-400 text-[10px] font-bold">{uploadProgress}%</span>
+        </div>
+      )}
+
+      {/* Upload done notification */}
+      {uploadDone && !uploadingFile && (
+        <div className="fixed bottom-24 left-4 right-4 z-40 max-w-sm mx-auto p-3.5 rounded-2xl bg-emerald-900/80 border border-emerald-700/50 shadow-2xl flex items-center gap-3 animate-slide-up">
+          <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0" />
+          <p className="text-emerald-100 text-xs font-semibold">
+            {uploadTotal > 1 ? `${uploadTotal} file berhasil diunggah!` : 'File berhasil diunggah!'}
+          </p>
         </div>
       )}
 
@@ -508,15 +542,16 @@ const FileBrowserPage = () => {
             </button>
 
             {/* Upload File button */}
-            <label className="flex items-center gap-2.5 px-4 py-2.5 rounded-full bg-dark-900 border border-dark-800 text-dark-100 font-semibold text-xs shadow-2xl active:scale-95 transition-transform cursor-pointer">
+            <button
+              onClick={() => {
+                setShowFabMenu(false);
+                setShowUploadPicker(true);
+              }}
+              className="flex items-center gap-2.5 px-4 py-2.5 rounded-full bg-dark-900 border border-dark-800 text-dark-100 font-semibold text-xs shadow-2xl active:scale-95 transition-transform"
+            >
               <Upload className="w-4 h-4 text-blue-400" />
               <span>Unggah File</span>
-              <input
-                type="file"
-                className="hidden"
-                onChange={handleFileUpload}
-              />
-            </label>
+            </button>
           </div>
         )}
 
@@ -708,6 +743,14 @@ const FileBrowserPage = () => {
           files={mediaFiles}
           initialIndex={viewerIndex}
           onClose={() => setViewerOpen(false)}
+        />
+      )}
+
+      {/* Upload Picker Modal */}
+      {showUploadPicker && (
+        <UploadPickerModal
+          onClose={() => setShowUploadPicker(false)}
+          onUpload={handleStartUpload}
         />
       )}
 
