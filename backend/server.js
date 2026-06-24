@@ -29,7 +29,7 @@ app.use(cors({
   origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Filename']
 }));
 
 // Rate limiting - hanya untuk auth routes (login) untuk mencegah brute force
@@ -40,9 +40,19 @@ const limiter = rateLimit({
 });
 app.use('/api/auth', limiter);
 
-// Body parser
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+// Body parser — KECUALI untuk upload-stream yang menggunakan raw piped stream
+app.use((req, res, next) => {
+  if (req.path === '/api/files/upload-stream') {
+    return next(); // Lewati body parser untuk upload stream
+  }
+  express.json({ limit: '10mb' })(req, res, next);
+});
+app.use((req, res, next) => {
+  if (req.path === '/api/files/upload-stream') {
+    return next();
+  }
+  express.urlencoded({ extended: true })(req, res, next);
+});
 
 // Logger (dev only)
 if (process.env.NODE_ENV !== 'production') {

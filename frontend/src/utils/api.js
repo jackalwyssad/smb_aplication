@@ -100,13 +100,47 @@ export const filesAPI = {
 
   rename: (path, newName) => api.post('/files/rename', { path, newName }),
 
-  upload: (path, file, onUploadProgress) => {
-    const formData = new FormData();
-    formData.append('path', path);
-    formData.append('file', file);
-    return uploadApi.post('/files/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      onUploadProgress,
+  // Upload file sebagai raw binary stream via XHR (tidak via axios)
+  // XHR memberikan progress upload yang akurat dan menghindari timeout proxy
+  upload: (path, file, onProgress) => {
+    return new Promise((resolve, reject) => {
+      const token = sessionStorage.getItem('fb_token');
+      const encodedPath = encodeURIComponent(path);
+      const encodedFilename = encodeURIComponent(file.name);
+      const url = `${BASE_URL}/files/upload-stream?path=${encodedPath}&token=${token}`;
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url, true);
+      xhr.setRequestHeader('X-Filename', encodedFilename);
+      xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress({ loaded: e.loaded, total: e.total });
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch (_) {
+            resolve({ success: true });
+          }
+        } else {
+          let errorMsg = 'Upload gagal';
+          try {
+            const parsed = JSON.parse(xhr.responseText);
+            errorMsg = parsed.error || errorMsg;
+          } catch (_) {}
+          reject(new Error(errorMsg));
+        }
+      });
+
+      xhr.addEventListener('error', () => reject(new Error('Koneksi gagal saat upload')));
+      xhr.addEventListener('abort', () => reject(new Error('Upload dibatalkan')));
+
+      xhr.send(file); // Kirim file langsung sebagai body (raw binary)
     });
   },
   // URL untuk streaming langsung (digunakan sebagai src di img/video)

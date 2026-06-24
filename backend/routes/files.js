@@ -540,85 +540,79 @@ router.post('/rename', async (req, res) => {
 });
 
 /**
- * POST /api/files/upload
- * Upload file via busboy streaming — tidak buffer file besar di memory server
+ * POST /api/files/upload-stream?path=/folder/path
+ * Upload file via raw binary stream — tidak ada multipart overhead
+ * Filename diambil dari header X-Filename, path dari query string
+ * Frontend kirim file langsung sebagai request body (Content-Type: application/octet-stream)
  */
-router.post('/upload', (req, res) => {
-  // Pastikan content-type adalah multipart
-  if (!req.headers['content-type'] || !req.headers['content-type'].includes('multipart/form-data')) {
-    return res.status(400).json({ error: 'Content-Type harus multipart/form-data' });
-  }
-
-  let uploadPath = '/';
-  let uploadedCount = 0;
-  let filePromise = null;
-
-  const bb = Busboy({ 
-    headers: req.headers,
-    limits: { fileSize: Infinity } // tidak ada batas ukuran file
-  });
-
-  // Tangkap field 'path' terlebih dahulu
-  bb.on('field', (name, value) => {
-    if (name === 'path') uploadPath = value;
-  });
-
-  bb.on('file', (fieldname, fileStream, info) => {
-    const { filename } = info;
-    const safeFilename = filename || `upload_${Date.now()}`;
-
-    // Jalankan proses upload secara async
-    filePromise = (async () => {
-      try {
-        const parentPath = normalizeSmbPath(uploadPath);
-        const destPath = parentPath ? `${parentPath}\\${safeFilename}` : safeFilename;
-
-        console.log(`[UPLOAD] Memulai upload streaming: ${safeFilename} -> ${destPath}`);
-        const smb = getSmbFromToken(req.user);
-        const writeStream = await smbCreateWriteStream(smb, destPath);
-
-        await new Promise((resolve, reject) => {
-          writeStream.on('finish', resolve);
-          writeStream.on('error', (err) => {
-            fileStream.destroy();
-            reject(err);
-          });
-          fileStream.on('error', (err) => {
-            writeStream.destroy();
-            reject(err);
-          });
-          fileStream.pipe(writeStream);
-        });
-
-        uploadedCount++;
-        console.log(`[UPLOAD] Selesai: ${safeFilename}`);
-      } catch (err) {
-        console.error(`[UPLOAD] Gagal upload ${safeFilename}:`, err.message);
-        throw err;
-      }
-    })();
-  });
-
-  bb.on('finish', async () => {
+router.post('/upload-stream', async (req, res) => {
+  try {
+    const rawPath = req.query.path || '/';
+    const rawFilename = req.headers['x-filename'];
+    if (!rawFilename) {
+      return res.status(400).json({ error: 'Header X-Filename diperlukan' });
+    }
+    
+    // Decode filename dari UTF-8 URI encoding
+    let filename;
     try {
-      if (filePromise) await filePromise;
-      res.json({ success: true, message: `${uploadedCount} file berhasil diunggah` });
-    } catch (err) {
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Gagal mengunggah file: ' + err.message });
-      }
+      filename = decodeURIComponent(rawFilename);
+    } catch (_) {
+      filename = rawFilename;
     }
-  });
-
-  bb.on('error', (err) => {
-    console.error('[UPLOAD] Busboy error:', err.message);
+    
+    const parentPath = normalizeSmbPath(rawPath);
+    const destPath = parentPath ? `${parentPath}\\${filename}` : filename;
+    
+    console.log(`[UPLOAD] Streaming binary upload: ${filename} -> ${destPath}`);
+    
+    const smb = getSmbFromToken(req.user);
+    const writeStream = await smbCreateWriteStream(smb, destPath);
+    
+    // Pipe request body langsung ke SMB write stream
+    await new Promise((resolve, reject) => {
+      let finished = false;
+      
+      const cleanup = (err) => {
+        if (finished) return;
+        finished = true;
+        if (err) reject(err);
+        else resolve();
+      };
+      
+      writeStream.on('finish', () => cleanup(null));
+      writeStream.on('error', (err) => {
+        console.error('[UPLOAD] SMB write error:', err.message);
+        try { req.destroy(); } catch (_) {}
+        cleanup(err);
+      });
+      
+      req.on('error', (err) => {
+        console.error('[UPLOAD] Request stream error:', err.message);
+        try { writeStream.destroy(); } catch (_) {}
+        cleanup(err);
+      });
+      
+      req.on('aborted', () => {
+        console.warn('[UPLOAD] Request aborted by client');
+        try { writeStream.destroy(); } catch (_) {}
+        cleanup(new Error('Upload dibatalkan oleh klien'));
+      });
+      
+      req.pipe(writeStream);
+    });
+    
+    console.log(`[UPLOAD] Selesai: ${filename}`);
+    res.json({ success: true, message: `File "${filename}" berhasil diunggah` });
+    
+  } catch (err) {
+    console.error('[UPLOAD] Error:', err.message);
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Gagal memproses upload: ' + err.message });
+      res.status(500).json({ error: 'Gagal mengunggah file: ' + err.message });
     }
-  });
-
-  req.pipe(bb);
+  }
 });
+
 
 // Map untuk melacak proses transcoding aktif
 const activeTranscodes = new Map(); // key: fileHash, value: { progress: number, process: ChildProcess }
