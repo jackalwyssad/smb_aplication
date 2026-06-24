@@ -497,9 +497,9 @@ const FileBrowserPage = () => {
         )}
       </main>
 
-      {/* Uploading progress notification */}
+      {/* Uploading progress notification — di atas layar, tidak menghalangi FAB */}
       {uploadingFile && (
-        <div className="fixed bottom-24 left-4 right-4 z-40 max-w-sm mx-auto p-3.5 rounded-2xl bg-dark-900 border border-dark-800 shadow-2xl flex items-center gap-3 animate-slide-up">
+        <div className="fixed top-20 left-4 right-4 z-40 max-w-sm mx-auto p-3 rounded-2xl bg-dark-900/95 border border-dark-800 shadow-2xl flex items-center gap-3 animate-slide-up backdrop-blur-sm">
           <LoadingSpinner size="sm" />
           <div className="flex-1 min-w-0">
             <p className="text-dark-100 text-xs font-semibold truncate">
@@ -510,13 +510,13 @@ const FileBrowserPage = () => {
               <div className="bg-accent-500 h-1 rounded-full transition-all duration-150" style={{ width: `${uploadProgress}%` }} />
             </div>
           </div>
-          <span className="text-dark-400 text-[10px] font-bold">{uploadProgress}%</span>
+          <span className="text-dark-400 text-[10px] font-bold flex-shrink-0">{uploadProgress}%</span>
         </div>
       )}
 
-      {/* Upload done notification */}
+      {/* Upload done notification — di atas layar, tidak menghalangi FAB */}
       {uploadDone && !uploadingFile && (
-        <div className="fixed bottom-24 left-4 right-4 z-40 max-w-sm mx-auto p-3.5 rounded-2xl bg-emerald-900/80 border border-emerald-700/50 shadow-2xl flex items-center gap-3 animate-slide-up">
+        <div className="fixed top-20 left-4 right-4 z-40 max-w-sm mx-auto p-3 rounded-2xl bg-emerald-900/90 border border-emerald-700/50 shadow-2xl flex items-center gap-3 animate-slide-up backdrop-blur-sm">
           <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0" />
           <p className="text-emerald-100 text-xs font-semibold">
             {uploadTotal > 1 ? `${uploadTotal} file berhasil diunggah!` : 'File berhasil diunggah!'}
